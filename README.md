@@ -18,22 +18,62 @@ A hands-on cloud security lab where a **Kali Linux attacker** (EC2) launches rea
 
 ## 🏗️ Architecture
 
-Single AWS account, separated by **VPC** (attacker VPC vs defender VPC), traffic flows over the internet like a real external attack.
+Single AWS account, separated by **VPC** (attacker vs defender). Attack traffic flows **over the internet** — just like a real external threat — through the WAF/ALB edge before reaching the vulnerable app. Account-wide detection services watch everything.
 
+```mermaid
+flowchart LR
+    subgraph ATT["🗡️ Attacker VPC — 10.0.0.0/16"]
+        KALI["🐉 Kali Linux (EC2)<br/>nmap · sqlmap · nikto<br/>hydra · burpsuite"]
+    end
+
+    NET(("🌐 Internet"))
+
+    subgraph DEF["🛡️ Defender VPC — 10.1.0.0/16"]
+        WAF["🚧 AWS WAF<br/>SQLi · XSS · Rate-limit"]
+        ALB["⚖️ Application<br/>Load Balancer"]
+        DVWA["🎯 DVWA (EC2)<br/>Docker container"]
+        S3[("🪣 S3 — fake PII")]
+        WAF --> ALB --> DVWA
+        DVWA -.-> S3
+    end
+
+    subgraph DET["🔍 Account-wide Detection"]
+        GD["👁️ GuardDuty"]
+        INS["🔬 Inspector"]
+        SH["📊 Security Hub"]
+    end
+
+    KALI ==>|"attacks"| NET ==>|"HTTP"| WAF
+    DVWA -.->|"flow logs / findings"| GD
+    DVWA -.-> INS
+    GD --> SH
+    INS --> SH
+
+    classDef attacker fill:#4d1414,stroke:#ff5252,color:#fff;
+    classDef defender fill:#0d2818,stroke:#57d977,color:#fff;
+    classDef detect fill:#1a2744,stroke:#5b9bd5,color:#fff;
+    class KALI attacker;
+    class WAF,ALB,DVWA,S3 defender;
+    class GD,INS,SH detect;
 ```
-   ATTACKER VPC (10.0.0.0/16)              DEFENDER VPC (10.1.0.0/16)
-   ┌─────────────────────┐                ┌────────────────────────────────┐
-   │  Kali Linux (EC2)   │                │  AWS WAF → ALB → DVWA (EC2)     │
-   │  nmap, sqlmap,      │ ──internet──►  │            (Docker container)   │
-   │  nikto, hydra,      │                │                                 │
-   │  burpsuite, etc.    │                │  S3 bucket (fake PII)           │
-   └─────────────────────┘                └────────────────────────────────┘
 
-   Account-wide detection: GuardDuty · Inspector · Security Hub
-                           (+ VPC Flow Logs, CloudTrail)
+> 🖼️ Full AWS-icon diagram: [`lab-architecture.drawio`](./lab-architecture.drawio) (open in [draw.io](https://app.diagrams.net))
+
+### 🔴 Attack flow → 🟢 Defense response
+
+```mermaid
+flowchart TD
+    A1["1️⃣ Recon — nmap"] -->|"caught by"| D1["👁️ GuardDuty<br/>Recon:EC2/Portscan"]
+    A2["2️⃣ SQL Injection — sqlmap"] -->|"blocked by"| D2["🚧 AWS WAF<br/>1,503 × HTTP 403"]
+    A3["3️⃣ XSS — payloads"] -->|"blocked by"| D3["🚧 AWS WAF<br/>Common rule"]
+    A4["4️⃣ Brute Force — hydra"] -->|"defeated by"| D4["🚧 WAF rate-limit<br/>+ app session"]
+    A5["5️⃣ Vuln Scan — nikto"] -->|"found by"| D5["🔬 Inspector + nikto<br/>16 web findings"]
+
+    classDef atk fill:#4d1414,stroke:#ff5252,color:#fff;
+    classDef def fill:#0d2818,stroke:#57d977,color:#fff;
+    class A1,A2,A3,A4,A5 atk;
+    class D1,D2,D3,D4,D5 def;
 ```
-
-See [`lab-architecture.drawio`](./lab-architecture.drawio) for the full diagram.
 
 ---
 
