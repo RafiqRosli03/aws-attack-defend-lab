@@ -1,0 +1,65 @@
+=====================================================================
+GUARDDUTY DETECTION EVIDENCE
+=====================================================================
+Lab: Attacking & Defensive Security Lab on AWS
+Service: Amazon GuardDuty (threat detection)
+Region: ap-southeast-5 (Malaysia)
+Detector: enabled
+Attacker instance flagged: i-05af06e7d86405127 (Kali Linux, attacker VPC)
+Date reviewed: 2026-09-13
+=====================================================================
+
+
+FINDINGS DETECTED (2)
+---------------------------------------------------------------------
+
+1. [SEVERITY 8.0 - HIGH]  Execution:EC2/MaliciousFile
+   - Title: "1794 security risk(s) detected including Adware.GenericKD.61062072
+     on EC2 instance i-05af06e7d86405127."
+   - What it is: GuardDuty Malware Protection scanned the instance disk and
+     detected 1,794 malicious/risky files.
+   - Why: The Kali attacker box is loaded with penetration-testing tools,
+     payloads, and wordlists (sqlmap payloads, nikto signatures, rockyou.txt,
+     metasploit modules, etc.). GuardDuty classifies this hacking toolset as
+     malware/adware.
+   - Real-world meaning: This is how GuardDuty would flag a compromised or
+     rogue instance carrying attack tooling.
+
+2. [SEVERITY 5.0 - MEDIUM]  Recon:EC2/Portscan
+   - Title: "An outbound portscan was detected from EC2 instance
+     i-05af06e7d86405127."
+   - What it is: GuardDuty detected outbound port-scanning behavior.
+   - Why: This is the nmap reconnaissance scan (Attack 1) run from Kali
+     against the DVWA target/ALB.
+   - KEY POINT: The AWS WAF could NOT detect this - port scans are not HTTP
+     traffic, so they never reach the WAF. GuardDuty caught it via VPC Flow
+     Logs. This proves the need for layered defense.
+
+
+DEFENSE-IN-DEPTH INSIGHT
+---------------------------------------------------------------------
+- WAF sees only HTTP (application layer): caught SQLi + XSS, but is BLIND to
+  port scans and host malware.
+- GuardDuty sees network + DNS + host behavior: caught the port scan (recon)
+  and the malicious files on the instance.
+- Each layer covers a different blind spot. No single tool catches everything.
+
+Mapping attacks -> detections:
+  Attack 1 (nmap recon)       -> GuardDuty Recon:EC2/Portscan  [caught]
+  Attack 2 (SQLi sqlmap)      -> WAF SQLi rule (1,503 x 403)   [blocked]
+  Attack 3 (XSS)              -> WAF Common rule (403)         [blocked]
+  Attack 4 (hydra brute)      -> WAF rate-limit + app/session  [defeated]
+  Attack 5 (nikto vuln scan)  -> nikto web findings + Inspector host scan
+  Kali tooling on disk        -> GuardDuty Execution:EC2/MaliciousFile [caught]
+
+
+NOTE ON REGIONAL SERVICE AVAILABILITY (important lesson)
+---------------------------------------------------------------------
+In ap-southeast-5 (Malaysia), the following are NOT available:
+  - Amazon Macie      (sensitive data discovery)  -> "Region Unsupported"
+  - Amazon Detective  (investigation graphs)      -> not offered
+Architectural takeaway: always verify each service's regional availability.
+Newer regions may lack services present in mature regions (e.g. Singapore
+ap-southeast-1 supports Macie + Detective). If required, deploy in a
+supported region.
+=====================================================================

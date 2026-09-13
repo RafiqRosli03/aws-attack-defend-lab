@@ -1,0 +1,1 @@
+"Amazon Detective is not available in the ap-southeast-5 (Malaysia) region. This demonstrates that AWS service availability varies by region — a key consideration when designing architectures. For Detective, you'd need to operate in a supported region (e.g. ap-southeast-1 Singapore) or use an alternative investigation approach."

@@ -1,0 +1,10 @@
+# NEVER commit private keys or secrets
+*.pem
+*.ppk
+*.key
+lab-ids.txt
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp

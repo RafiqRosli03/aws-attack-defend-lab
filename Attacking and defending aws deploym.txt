@@ -1,0 +1,12 @@
+Attacking and defending aws deployment phase.
+REGION=ap-southeast-5
+KALI_ID=i-0d954b1250292dde3
+TARGET_ID=i-0cb7fc3bc3d1be6e6
+ATT_VPC=vpc-045d916256976f0f3
+DEF_VPC=vpc-0db220f0ae1d00e0c
+TG_ARN=arn:aws:elasticloadbalancing:ap-southeast-5:497862079645:targetgroup/lab-dvwa-tg/d0a4ec823f618a3c
+ALB_ARN=arn:aws:elasticloadbalancing:ap-southeast-5:497862079645:loadbalancer/app/lab-dvwa-alb/946525a4bb8bf14d
+DVWA_URL=lab-dvwa-alb-198301645.ap-southeast-5.elb.amazonaws.com
+ALB_SG=sg-098fe6e7b500c78a7
+TARGET_SG=sg-0519f664f5de763ea
+KALI_AMI=ami-07a1e1ba439b81fdc

@@ -1,0 +1,389 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Attack & Defend Security Lab (ap-southeast-5).
+  Attacker VPC (Kali EC2) + Defender VPC (DVWA target behind ALB + WAF),
+  SSM access (no SSH ports open), S3 fake-PII bucket for Macie, VPC Flow Logs.
+  Security services (GuardDuty/Inspector/Detective/Security Hub/Macie) are enabled
+  separately via the deploy guide (they are account/region toggles, not per-stack).
+
+# ---------------------------------------------------------------------------
+# PARAMETERS
+# ---------------------------------------------------------------------------
+Parameters:
+  KaliAmiId:
+    Type: AWS::EC2::Image::Id
+    Description: >
+      Kali Linux AMI ID for ap-southeast-5. Subscribe to Kali Linux in AWS Marketplace,
+      then get the AMI ID for this region and paste it here.
+
+  TargetAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: Amazon Linux 2023 AMI for the DVWA target (auto-resolved via SSM public parameter).
+
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues: [t3.micro, t3.small, t3.medium]
+    Description: Instance size for both EC2s.
+
+  MyIpCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: >
+      Your public IP in CIDR (e.g. 1.2.3.4/32) to reach the DVWA target for testing.
+      For a realistic lab you can leave the ALB open, but restricting to your IP is safer.
+
+# ---------------------------------------------------------------------------
+# RESOURCES
+# ---------------------------------------------------------------------------
+Resources:
+
+  # ========================= ATTACKER VPC =========================
+  AttackerVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: lab-attacker-vpc }]
+
+  AttackerIGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: lab-attacker-igw }]
+
+  AttackerIGWAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref AttackerVPC
+      InternetGatewayId: !Ref AttackerIGW
+
+  AttackerSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AttackerVPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags: [{ Key: Name, Value: lab-attacker-subnet }]
+
+  AttackerRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref AttackerVPC
+      Tags: [{ Key: Name, Value: lab-attacker-rt }]
+
+  AttackerDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttackerIGWAttach
+    Properties:
+      RouteTableId: !Ref AttackerRT
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref AttackerIGW
+
+  AttackerSubnetRTAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AttackerSubnet
+      RouteTableId: !Ref AttackerRT
+
+  KaliSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Kali attacker - outbound only (SSM access, no inbound needed)
+      VpcId: !Ref AttackerVPC
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags: [{ Key: Name, Value: lab-kali-sg }]
+
+  # ========================= DEFENDER VPC =========================
+  DefenderVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.1.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: lab-defender-vpc }]
+
+  DefenderIGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: lab-defender-igw }]
+
+  DefenderIGWAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref DefenderVPC
+      InternetGatewayId: !Ref DefenderIGW
+
+  DefenderSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DefenderVPC
+      CidrBlock: 10.1.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags: [{ Key: Name, Value: lab-defender-subnet-a }]
+
+  DefenderSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref DefenderVPC
+      CidrBlock: 10.1.2.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags: [{ Key: Name, Value: lab-defender-subnet-b }]
+
+  DefenderRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DefenderVPC
+      Tags: [{ Key: Name, Value: lab-defender-rt }]
+
+  DefenderDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: DefenderIGWAttach
+    Properties:
+      RouteTableId: !Ref DefenderRT
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref DefenderIGW
+
+  DefenderSubnetARTAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DefenderSubnetA
+      RouteTableId: !Ref DefenderRT
+
+  DefenderSubnetBRTAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DefenderSubnetB
+      RouteTableId: !Ref DefenderRT
+
+  AlbSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ALB - allow HTTP 80 from the internet (attacker reaches it here)
+      VpcId: !Ref DefenderVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags: [{ Key: Name, Value: lab-alb-sg }]
+
+  TargetSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: DVWA target - allow HTTP 80 only from the ALB
+      VpcId: !Ref DefenderVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref AlbSG
+      Tags: [{ Key: Name, Value: lab-target-sg }]
+
+  # ========================= SSM INSTANCE ROLE =========================
+  SsmInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags: [{ Key: Name, Value: lab-ssm-role }]
+
+  SsmInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref SsmInstanceRole]
+
+  # ========================= KALI ATTACKER EC2 =========================
+  KaliInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref KaliAmiId
+      SubnetId: !Ref AttackerSubnet
+      SecurityGroupIds: [!Ref KaliSG]
+      IamInstanceProfile: !Ref SsmInstanceProfile
+      Tags: [{ Key: Name, Value: lab-kali-attacker }]
+
+  # ========================= DVWA TARGET EC2 =========================
+  TargetInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref TargetAmiId
+      SubnetId: !Ref DefenderSubnetA
+      SecurityGroupIds: [!Ref TargetSG]
+      IamInstanceProfile: !Ref SsmInstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          dnf update -y
+          dnf install -y docker
+          systemctl enable --now docker
+          # run DVWA on port 80
+          docker run -d --restart unless-stopped -p 80:80 vulnerables/web-dvwa
+      Tags: [{ Key: Name, Value: lab-dvwa-target }]
+
+  # ========================= ALB + TARGET GROUP =========================
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref DefenderVPC
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      HealthCheckPath: /
+      Matcher: { HttpCode: "200,302" }
+      Targets:
+        - Id: !Ref TargetInstance
+          Port: 80
+      Tags: [{ Key: Name, Value: lab-dvwa-tg }]
+
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: lab-dvwa-alb
+      Type: application
+      Scheme: internet-facing
+      SecurityGroups: [!Ref AlbSG]
+      Subnets: [!Ref DefenderSubnetA, !Ref DefenderSubnetB]
+      Tags: [{ Key: Name, Value: lab-dvwa-alb }]
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # ========================= AWS WAF (regional, on the ALB) =========================
+  WebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: lab-dvwa-webacl
+      Scope: REGIONAL
+      DefaultAction: { Allow: {} }
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: labDvwaWebAcl
+      Rules:
+        - Name: AWSManagedSQLi
+          Priority: 1
+          OverrideAction: { None: {} }
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesSQLiRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: sqliRule
+        - Name: AWSManagedCommon
+          Priority: 2
+          OverrideAction: { None: {} }
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: commonRule
+        - Name: RateLimit
+          Priority: 3
+          Action: { Block: {} }
+          Statement:
+            RateBasedStatement:
+              Limit: 100
+              AggregateKeyType: IP
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: rateLimitRule
+
+  WebACLAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Properties:
+      ResourceArn: !Ref ALB
+      WebACLArn: !GetAtt WebACL.Arn
+
+  # ========================= S3 FAKE-PII BUCKET (for Macie) =========================
+  MacieBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "lab-macie-fakepii-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags: [{ Key: Name, Value: lab-macie-bucket }]
+
+  # ========================= VPC FLOW LOGS (defender VPC) =========================
+  FlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /lab/defender-vpc/flowlogs
+      RetentionInDays: 1
+
+  FlowLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: vpc-flow-logs.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: flowlogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: "*"
+
+  DefenderFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceType: VPC
+      ResourceId: !Ref DefenderVPC
+      TrafficType: ALL
+      LogGroupName: !Ref FlowLogGroup
+      DeliverLogsPermissionArn: !GetAtt FlowLogRole.Arn
+
+# ---------------------------------------------------------------------------
+# OUTPUTS
+# ---------------------------------------------------------------------------
+Outputs:
+  DvwaUrl:
+    Description: URL of the DVWA target (through the ALB + WAF). Attack THIS from Kali.
+    Value: !Sub "http://${ALB.DNSName}/"
+  KaliInstanceId:
+    Description: Connect via SSM - Systems Manager > Session Manager
+    Value: !Ref KaliInstance
+  TargetInstanceId:
+    Description: DVWA target instance (Inspector scans this)
+    Value: !Ref TargetInstance
+  MacieBucketName:
+    Description: Upload the fake-PII CSV here for Macie to scan
+    Value: !Ref MacieBucket

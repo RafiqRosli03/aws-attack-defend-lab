@@ -1,0 +1,85 @@
+=====================================================================
+ADDITIONAL FINDING (GuardDuty) - MALICIOUS FILES DETECTED ON KALI
+=====================================================================
+Lab: Attacking & Defensive Security Lab on AWS
+Service: Amazon GuardDuty - Malware Protection (EC2 disk scan)
+Region: ap-southeast-5 (Malaysia)
+Scanned instance: i-05af06e7d86405127  (Kali Linux attacker, attacker VPC)
+Date reviewed: 2026-09-13
+=====================================================================
+
+
+THE FINDING
+---------------------------------------------------------------------
+Finding type : Execution:EC2/MaliciousFile
+Severity     : 8.0  (HIGH)
+Title        : "1794 security risk(s) detected including
+                Adware.GenericKD.61062072 on EC2 instance
+                i-05af06e7d86405127."
+
+Summary      : GuardDuty Malware Protection scanned the disk (EBS volume)
+               of the Kali attacker instance and detected 1,794 files it
+               classifies as malicious / risky, including a signature
+               named Adware.GenericKD.61062072.
+
+
+WHY GUARDDUTY FLAGGED THE KALI INSTANCE
+---------------------------------------------------------------------
+This is NOT a real infection. The instance is a Kali Linux penetration
+testing box, deliberately loaded with offensive security tooling. GuardDuty
+Malware Protection scans the instance's disk with an anti-malware engine,
+and legitimate hacking tools/payloads match malware signatures.
+
+Files that typically trigger this on Kali:
+  - Exploitation frameworks (Metasploit modules, payloads)
+  - Web attack tools (sqlmap tamper scripts, nikto plugins)
+  - Password wordlists (rockyou.txt and similar)
+  - Reverse shells, exploit PoCs, malware samples bundled with Kali
+  - Adware / hacktool signatures in the Kali toolset
+
+To an anti-malware engine, an attacker's toolkit looks the same as
+malware - because functionally, much of it is.
+
+
+HOW GUARDDUTY SCANNED IT (mechanism)
+---------------------------------------------------------------------
+- GuardDuty Malware Protection can scan the EBS volume of an EC2 instance,
+  either triggered by a suspicious finding or on-demand.
+- It takes a snapshot-based scan of the disk (agentless) and runs an
+  anti-malware engine against the files.
+- No agent required; the scan reads the volume, not live memory.
+- Result: a count of detected files + representative signature names,
+  raised as an Execution:EC2/MaliciousFile finding.
+
+
+WHY THIS MATTERS (real-world value)
+---------------------------------------------------------------------
+- In a real environment, this exact finding is how you would detect a
+  COMPROMISED or ROGUE instance - e.g. an attacker who gained a foothold
+  and staged tools, or an insider running hacking tools on a corporate box.
+- Severity 8.0 (High) correctly reflects that "malware present on a host"
+  is a serious signal.
+- It complements the network-based detection: GuardDuty also raised
+  Recon:EC2/Portscan (Medium 5.0) for the outbound nmap scan from the
+  same instance. Together: host-file evidence + network-behavior evidence
+  pointing at the same rogue instance.
+
+
+DETECTION LAYERING NOTE
+---------------------------------------------------------------------
+This finding is something NO other layer in the lab could produce:
+  - WAF        : sees only inbound HTTP to the app - cannot see files on Kali.
+  - Inspector  : scans for known CVEs in installed packages - not arbitrary
+                 malicious files/tooling.
+  - GuardDuty  : scanned the actual disk contents and flagged the tooling.
+=> GuardDuty Malware Protection adds host-level malware visibility that the
+   other controls do not provide.
+
+
+EVIDENCE TO CAPTURE (screenshots)
+---------------------------------------------------------------------
+[ ] GuardDuty > Findings > Execution:EC2/MaliciousFile (severity 8.0)
+[ ] Finding detail showing instance i-05af06e7d86405127 + file count 1794
+[ ] The signature name (Adware.GenericKD.61062072)
+[ ] (Optional) the paired Recon:EC2/Portscan finding on the same instance
+=====================================================================
